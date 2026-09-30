@@ -1,0 +1,175 @@
+const { addonBuilder, getHTTPRouter } = require('stremio-addon-sdk');
+const axios = require('axios');
+const cheerio = require('cheerio');
+
+// Entry point URL that redirects to the active MoviesMod domain
+const DOMAIN_ENTRY_POINT = 'https://moviesmod.day'; 
+
+const HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+    'Accept-Language': 'en-US,en;q=0.9'
+};
+
+const manifest = {
+    id: 'org.moviesmod.stremio',
+    version: '1.1.0',
+    name: 'MoviesMod Streams',
+    description: 'Scrapes direct playable video streams from MoviesMod with Auto-Domain resolution',
+    resources: ['stream'],
+    types: ['movie'],
+    idPrefixes: ['tt']
+};
+
+const builder = new addonBuilder(manifest);
+
+// Cache the resolved domain in memory so we don't ping on every single request
+let activeDomainCache = null;
+let lastDomainCheck = 0;
+const CACHE_DURATION = 1000 * 60 * 60; // Re-check domain every 1 hour
+
+// 1. Auto Domain Catcher Function
+async function getActiveDomain() {
+    const now = Date.now();
+    if (activeDomainCache && (now - lastDomainCheck < CACHE_DURATION)) {
+        return activeDomainCache;
+    }
+
+    try {
+        // Follow redirects to find the live domain
+        const res = await axios.get(DOMAIN_ENTRY_POINT, {
+            headers: HEADERS,
+            maxRedirects: 5,
+            timeout: 3000
+        });
+        
+        const finalUrl = res.request.res.responseUrl || res.config.url;
+        const parsedUrl = new URL(finalUrl);
+        activeDomainCache = `${parsedUrl.protocol}//${parsedUrl.host}`;
+        lastDomainCheck = now;
+        
+        console.log(`[Auto-Domain] Active domain resolved to: ${activeDomainCache}`);
+        return activeDomainCache;
+    } catch (e) {
+        console.error('[Auto-Domain] Failed to catch domain, using fallback entry point:', e.message);
+        return activeDomainCache || DOMAIN_ENTRY_POINT;
+    }
+}
+
+// 2. Fetch Title from Cinemeta using IMDb ID
+async function getMovieInfo(imdbId) {
+    try {
+        const res = await axios.get(`https://v3-cinemeta.strem.fun/meta/movie/${imdbId}.json`, { timeout: 3000 });
+        if (res.data && res.data.meta) {
+            return { name: res.data.meta.name, year: res.data.meta.year };
+        }
+    } catch (e) {
+        console.error('Error fetching Cinemeta metadata:', e.message);
+    }
+    return null;
+}
+
+// 3. Search MoviesMod using the automatically resolved domain
+async function searchMoviesMod(query, baseUrl) {
+    try {
+        const searchUrl = `${baseUrl}/?s=${encodeURIComponent(query)}`;
+        const { data } = await axios.get(searchUrl, { headers: HEADERS, timeout: 4000 });
+        const $ = cheerio.load(data);
+        
+        let targetLink = null;
+        $('article, .post-item, .latest-host-list').each((_, el) => {
+            const link = $(el).find('a').attr('href');
+            if (link && !targetLink) {
+                targetLink = link;
+            }
+        });
+        return targetLink;
+    } catch (e) {
+        console.error('Search error:', e.message);
+        return null;
+    }
+}
+
+// 4. Extract HubCloud links from the MoviesMod post page
+async function extractHubCloudLinks(postUrl) {
+    try {
+        const { data } = await axios.get(postUrl, { headers: HEADERS, timeout: 4000 });
+        const $ = cheerio.load(data);
+        const links = [];
+
+        $('a[href*="hubcloud"], a[href*="drivehub"]').each((_, el) => {
+            const url = $(el).attr('href');
+            const parentText = $(el).closest('p, div, h3').text().trim();
+            
+            let quality = '720p';
+            if (parentText.includes('1080p')) quality = '1080p';
+            else if (parentText.includes('4K') || parentText.includes('2160p')) quality = '4K';
+            else if (parentText.includes('480p')) quality = '480p';
+
+            if (url) {
+                links.push({ url, quality });
+            }
+        });
+
+        return links;
+    } catch (e) {
+        console.error('Post extraction error:', e.message);
+        return [];
+    }
+}
+
+// 5. Resolve HubCloud page to actual stream link
+async function resolveHubCloudStream(hubUrl) {
+    try {
+        const { data } = await axios.get(hubUrl, { headers: HEADERS, timeout: 4000 });
+        const $ = cheerio.load(data);
+        
+        const directBtn = $('a[href*="download"], a.btn-primary, .download-btn').attr('href');
+        return directBtn || hubUrl;
+    } catch (e) {
+        return hubUrl;
+    }
+}
+
+// Stream Handler
+builder.defineStreamHandler(async ({ id }) => {
+    console.log(`Processing stream request for: ${id}`);
+    
+    // Automatically catch the current active domain
+    const activeDomain = await getActiveDomain();
+
+    const movieInfo = await getMovieInfo(id);
+    if (!movieInfo) return { streams: [] };
+
+    const postUrl = await searchMoviesMod(movieInfo.name, activeDomain);
+    if (!postUrl) return { streams: [] };
+
+    const hubLinks = await extractHubCloudLinks(postUrl);
+    if (!hubLinks.length) return { streams: [] };
+
+    // Process top 3 links concurrently to stay under Vercel timeout limits
+    const streamPromises = hubLinks.slice(0, 3).map(async (item) => {
+        const directUrl = await resolveHubCloudStream(item.url);
+        return {
+            name: 'MoviesMod',
+            title: `[${item.quality}] ${movieInfo.name}`,
+            url: directUrl
+        };
+    });
+
+    const streams = await Promise.all(streamPromises);
+    return { streams };
+});
+
+const addonInterface = builder.getInterface();
+const router = getHTTPRouter(addonInterface);
+
+module.exports = (req, res) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Headers', '*');
+    
+    if (req.method === 'OPTIONS') {
+        return res.status(200).end();
+    }
+
+    return router(req, res);
+};
