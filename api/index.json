@@ -2,19 +2,21 @@ const { addonBuilder, getHTTPRouter } = require('stremio-addon-sdk');
 const axios = require('axios');
 const cheerio = require('cheerio');
 
-// Entry point URL that redirects to the active MoviesMod domain
-const DOMAIN_ENTRY_POINT = 'https://moviesmod.day'; 
+// Reliable direct base URL for MoviesMod
+const MOVIESMOD_BASE = 'https://moviesmod.day'; 
 
 const HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-    'Accept-Language': 'en-US,en;q=0.9'
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Cache-Control': 'no-cache'
 };
 
 const manifest = {
     id: 'org.moviesmod.stremio',
-    version: '1.1.0',
+    version: '1.2.0',
     name: 'MoviesMod Streams',
-    description: 'Scrapes direct playable video streams from MoviesMod with Auto-Domain resolution',
+    description: 'Scrapes direct playable video streams from MoviesMod',
     resources: ['stream'],
     types: ['movie'],
     idPrefixes: ['tt']
@@ -22,40 +24,7 @@ const manifest = {
 
 const builder = new addonBuilder(manifest);
 
-// Cache the resolved domain in memory so we don't ping on every single request
-let activeDomainCache = null;
-let lastDomainCheck = 0;
-const CACHE_DURATION = 1000 * 60 * 60; // Re-check domain every 1 hour
-
-// 1. Auto Domain Catcher Function
-async function getActiveDomain() {
-    const now = Date.now();
-    if (activeDomainCache && (now - lastDomainCheck < CACHE_DURATION)) {
-        return activeDomainCache;
-    }
-
-    try {
-        // Follow redirects to find the live domain
-        const res = await axios.get(DOMAIN_ENTRY_POINT, {
-            headers: HEADERS,
-            maxRedirects: 5,
-            timeout: 3000
-        });
-        
-        const finalUrl = res.request.res.responseUrl || res.config.url;
-        const parsedUrl = new URL(finalUrl);
-        activeDomainCache = `${parsedUrl.protocol}//${parsedUrl.host}`;
-        lastDomainCheck = now;
-        
-        console.log(`[Auto-Domain] Active domain resolved to: ${activeDomainCache}`);
-        return activeDomainCache;
-    } catch (e) {
-        console.error('[Auto-Domain] Failed to catch domain, using fallback entry point:', e.message);
-        return activeDomainCache || DOMAIN_ENTRY_POINT;
-    }
-}
-
-// 2. Fetch Title from Cinemeta using IMDb ID
+// Fetch Title from Cinemeta using IMDb ID
 async function getMovieInfo(imdbId) {
     try {
         const res = await axios.get(`https://v3-cinemeta.strem.fun/meta/movie/${imdbId}.json`, { timeout: 3000 });
@@ -68,17 +37,17 @@ async function getMovieInfo(imdbId) {
     return null;
 }
 
-// 3. Search MoviesMod using the automatically resolved domain
-async function searchMoviesMod(query, baseUrl) {
+// Search MoviesMod for the movie page
+async function searchMoviesMod(query) {
     try {
-        const searchUrl = `${baseUrl}/?s=${encodeURIComponent(query)}`;
-        const { data } = await axios.get(searchUrl, { headers: HEADERS, timeout: 4000 });
+        const searchUrl = `${MOVIESMOD_BASE}/?s=${encodeURIComponent(query)}`;
+        const { data } = await axios.get(searchUrl, { headers: HEADERS, timeout: 5000 });
         const $ = cheerio.load(data);
         
         let targetLink = null;
-        $('article, .post-item, .latest-host-list').each((_, el) => {
-            const link = $(el).find('a').attr('href');
-            if (link && !targetLink) {
+        $('article, .post-item, .latest-host-list, h2.entry-title').each((_, el) => {
+            const link = $(el).find('a').attr('href') \vert{}\vert{}$(el).attr('href');
+            if (link && !targetLink && link.includes(MOVIESMOD_BASE)) {
                 targetLink = link;
             }
         });
@@ -89,14 +58,14 @@ async function searchMoviesMod(query, baseUrl) {
     }
 }
 
-// 4. Extract HubCloud links from the MoviesMod post page
+// Extract HubCloud links from post page
 async function extractHubCloudLinks(postUrl) {
     try {
-        const { data } = await axios.get(postUrl, { headers: HEADERS, timeout: 4000 });
+        const { data } = await axios.get(postUrl, { headers: HEADERS, timeout: 5000 });
         const $ = cheerio.load(data);
         const links = [];
 
-        $('a[href*="hubcloud"], a[href*="drivehub"]').each((_, el) => {
+        $('a[href*="hubcloud"], a[href*="drivehub"], a[href*="techmky"]').each((_, el) => {
             const url = $(el).attr('href');
             const parentText = $(el).closest('p, div, h3').text().trim();
             
@@ -117,8 +86,8 @@ async function extractHubCloudLinks(postUrl) {
     }
 }
 
-// 5. Resolve HubCloud page to actual stream link
-async function resolveHubCloudStream(hubUrl) {
+// Resolve HubCloud page to actual video link
+async function resolveStreamUrl(hubUrl) {
     try {
         const { data } = await axios.get(hubUrl, { headers: HEADERS, timeout: 4000 });
         const $ = cheerio.load(data);
@@ -133,22 +102,18 @@ async function resolveHubCloudStream(hubUrl) {
 // Stream Handler
 builder.defineStreamHandler(async ({ id }) => {
     console.log(`Processing stream request for: ${id}`);
-    
-    // Automatically catch the current active domain
-    const activeDomain = await getActiveDomain();
 
     const movieInfo = await getMovieInfo(id);
     if (!movieInfo) return { streams: [] };
 
-    const postUrl = await searchMoviesMod(movieInfo.name, activeDomain);
+    const postUrl = await searchMoviesMod(movieInfo.name);
     if (!postUrl) return { streams: [] };
 
     const hubLinks = await extractHubCloudLinks(postUrl);
     if (!hubLinks.length) return { streams: [] };
 
-    // Process top 3 links concurrently to stay under Vercel timeout limits
     const streamPromises = hubLinks.slice(0, 3).map(async (item) => {
-        const directUrl = await resolveHubCloudStream(item.url);
+        const directUrl = await resolveStreamUrl(item.url);
         return {
             name: 'MoviesMod',
             title: `[${item.quality}] ${movieInfo.name}`,
