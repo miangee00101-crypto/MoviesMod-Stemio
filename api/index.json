@@ -1,8 +1,12 @@
-const { addonBuilder, getHTTPRouter } = require('stremio-addon-sdk');
+const express = require('express');
+const cors = require('cors');
+const { addonBuilder } = require('stremio-addon-sdk');
 const axios = require('axios');
 const cheerio = require('cheerio');
 
-// Updated base domain
+const app = express();
+app.use(cors());
+
 const MOVIESMOD_BASE = 'https://moviesmod.ai.in';
 
 const HEADERS = {
@@ -13,7 +17,7 @@ const HEADERS = {
 
 const manifest = {
     id: 'org.moviesmod.stremio',
-    version: '1.4.0',
+    version: '1.5.0',
     name: 'MoviesMod Streams',
     description: 'Scrapes direct playable video streams from MoviesMod',
     resources: ['stream'],
@@ -57,7 +61,7 @@ async function searchMoviesMod(query) {
     }
 }
 
-// 3. Scrape HubCloud / Direct Links
+// 3. Scrape HubCloud Links
 async function extractHubCloudLinks(postUrl) {
     try {
         const { data } = await axios.get(postUrl, { headers: HEADERS, timeout: 5000 });
@@ -97,7 +101,7 @@ async function resolveStreamUrl(hubUrl) {
     }
 }
 
-// Stremio Stream Handler
+// Define Stream Handler
 builder.defineStreamHandler(async ({ id }) => {
     const movieInfo = await getMovieInfo(id);
     if (!movieInfo) return { streams: [] };
@@ -122,16 +126,17 @@ builder.defineStreamHandler(async ({ id }) => {
 });
 
 const addonInterface = builder.getInterface();
-const router = getHTTPRouter(addonInterface);
 
-// Render HTML Configuration Page
-function renderConfigPage(req) {
+// --- ROUTING ---
+
+// Root / Configure Page
+app.get('/', (req, res) => {
     const host = req.headers.host;
     const protocol = req.headers['x-forwarded-proto'] || 'https';
     const manifestUrl = `${protocol}://${host}/manifest.json`;
     const stremioUrl = `stremio://${host}/manifest.json`;
 
-    return `
+    res.send(`
     <!DOCTYPE html>
     <html lang="en">
     <head>
@@ -139,12 +144,12 @@ function renderConfigPage(req) {
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>MoviesMod Stremio Addon</title>
         <style>
-            * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+            * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
             body { background: #0f172a; color: #f8fafc; display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 20px; }
             .card { background: #1e293b; border: 1px solid #334155; border-radius: 12px; padding: 32px; max-width: 480px; width: 100%; text-align: center; box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5); }
             h1 { font-size: 1.75rem; color: #38bdf8; margin-bottom: 8px; }
             p { color: #94a3b8; font-size: 0.95rem; margin-bottom: 24px; line-height: 1.5; }
-            .badge { display: inline-block; background: #0284c7; color: #fff; font-size: 0.75rem; font-weight: 600; padding: 4px 10px; border-radius: 9999px; margin-bottom: 16px; text-transform: uppercase; letter-spacing: 0.05em; }
+            .badge { display: inline-block; background: #0284c7; color: #fff; font-size: 0.75rem; font-weight: 600; padding: 4px 10px; border-radius: 9999px; margin-bottom: 16px; text-transform: uppercase; }
             .actions { display: flex; flex-direction: column; gap: 12px; }
             .btn { display: flex; align-items: center; justify-content: center; padding: 12px 20px; border-radius: 8px; font-weight: 600; text-decoration: none; cursor: pointer; transition: all 0.2s ease; border: none; font-size: 1rem; }
             .btn-primary { background: #8b5cf6; color: #ffffff; }
@@ -176,21 +181,21 @@ function renderConfigPage(req) {
         </script>
     </body>
     </html>
-    `;
-}
+    `);
+});
 
-module.exports = (req, res) => {
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Headers', '*');
+// Stremio Manifest Route
+app.get('/manifest.json', (req, res) => {
+    res.json(manifest);
+});
+
+// Stremio Stream Route
+app.get('/stream/:type/:id.json', async (req, res) => {
+    const { type, id } = req.params;
+    const cleanId = id.replace('.json', '');
     
-    if (req.method === 'OPTIONS') {
-        return res.status(200).end();
-    }
+    const streamResults = await addonInterface.get('stream', type, cleanId);
+    res.json(streamResults || { streams: [] });
+});
 
-    if (req.url === '/' || req.url === '/configure') {
-        res.setHeader('Content-Type', 'text/html');
-        return res.status(200).send(renderConfigPage(req));
-    }
-
-    return router(req, res);
-};
+module.exports = app;
