@@ -1,13 +1,19 @@
 {
-  "name": "moviesmod-stremio-addon",
+  "name": "moviesmod-stremio",
   "version": "1.5.0",
-  "description": "MoviesMod Stremio Addon hosted on Vercel",
+  "description": "MoviesMod Streams Stremio Addon",
   "main": "api/index.js",
+  "scripts": {
+    "start": "node api/index.js"
+  },
   "dependencies": {
-    "axios": "^1.6.8",
-    "cheerio": "^1.0.0-rc.12",
+    "axios": "^1.7.7",
+    "cheerio": "^1.0.0",
     "cors": "^2.8.5",
-    "express": "^4.19.2",
-    "stremio-addon-sdk": "^5.15.2"
+    "express": "^4.21.0",
+    "stremio-addon-sdk": "^1.6.10"
+  },
+  "engines": {
+    "node": "18.x"
   }
 }
