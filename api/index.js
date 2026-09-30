@@ -41,13 +41,13 @@ async function getMovieInfo(imdbId) {
 
 async function searchMoviesMod(query) {
     try {
-        const searchUrl = `${MOVIESMOD_BASE}/?s=${encodeURIComponent(query)}`;
+        const searchUrl = `\( {MOVIESMOD_BASE}/?s= \){encodeURIComponent(query)}`;
         const { data } = await axios.get(searchUrl, { headers: HEADERS, timeout: 5000 });
         const $ = cheerio.load(data);
         
         let targetLink = null;
         $('article, .post-item, .latest-host-list, h2.entry-title').each((_, el) => {
-            const link = $(el).find('a').attr('href') \vert{}\vert{}$(el).attr('href');
+            const link = $(el).find('a').attr('href') || $(el).attr('href');
             if (link && !targetLink && link.includes('moviesmod')) {
                 targetLink = link;
             }
@@ -122,11 +122,11 @@ builder.defineStreamHandler(async ({ id }) => {
 
 const addonInterface = builder.getInterface();
 
-// Handle root URL and config landing page
+// Landing page
 app.get('/', (req, res) => {
     const host = req.headers.host;
     const protocol = req.headers['x-forwarded-proto'] || 'https';
-    const manifestUrl = `${protocol}://${host}/manifest.json`;
+    const manifestUrl = `\( {protocol}:// \){host}/manifest.json`;
     const stremioUrl = `stremio://${host}/manifest.json`;
 
     res.send(`
