@@ -27,7 +27,6 @@ const manifest = {
 
 const builder = new addonBuilder(manifest);
 
-// 1. Fetch IMDb Metadata via Cinemeta
 async function getMovieInfo(imdbId) {
     try {
         const res = await axios.get(`https://v3-cinemeta.strem.fun/meta/movie/${imdbId}.json`, { timeout: 3000 });
@@ -40,7 +39,6 @@ async function getMovieInfo(imdbId) {
     return null;
 }
 
-// 2. Search MoviesMod
 async function searchMoviesMod(query) {
     try {
         const searchUrl = `${MOVIESMOD_BASE}/?s=${encodeURIComponent(query)}`;
@@ -61,7 +59,6 @@ async function searchMoviesMod(query) {
     }
 }
 
-// 3. Scrape HubCloud Links
 async function extractHubCloudLinks(postUrl) {
     try {
         const { data } = await axios.get(postUrl, { headers: HEADERS, timeout: 5000 });
@@ -89,7 +86,6 @@ async function extractHubCloudLinks(postUrl) {
     }
 }
 
-// 4. Resolve Stream URL
 async function resolveStreamUrl(hubUrl) {
     try {
         const { data } = await axios.get(hubUrl, { headers: HEADERS, timeout: 4000 });
@@ -101,7 +97,6 @@ async function resolveStreamUrl(hubUrl) {
     }
 }
 
-// Define Stream Handler
 builder.defineStreamHandler(async ({ id }) => {
     const movieInfo = await getMovieInfo(id);
     if (!movieInfo) return { streams: [] };
@@ -127,9 +122,7 @@ builder.defineStreamHandler(async ({ id }) => {
 
 const addonInterface = builder.getInterface();
 
-// --- ROUTING ---
-
-// Root / Configure Page
+// Handle root URL and config landing page
 app.get('/', (req, res) => {
     const host = req.headers.host;
     const protocol = req.headers['x-forwarded-proto'] || 'https';
@@ -184,16 +177,13 @@ app.get('/', (req, res) => {
     `);
 });
 
-// Stremio Manifest Route
 app.get('/manifest.json', (req, res) => {
     res.json(manifest);
 });
 
-// Stremio Stream Route
 app.get('/stream/:type/:id.json', async (req, res) => {
     const { type, id } = req.params;
     const cleanId = id.replace('.json', '');
-    
     const streamResults = await addonInterface.get('stream', type, cleanId);
     res.json(streamResults || { streams: [] });
 });
